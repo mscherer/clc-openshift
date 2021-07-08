@@ -1,0 +1,288 @@
+apiVersion: v1
+kind: Template
+labels:
+  app: clc
+  template: python
+message: 'The following software have been deployed on https://${APPLICATION_DOMAIN}.'
+
+metadata:
+  annotations:
+    description: A deployment of clc
+    iconClass: icon-python
+    openshift.io/display-name: clc
+    openshift.io/documentation-url: https://github.com/Humbedooh/clc
+    openshift.io/long-description: This template deploy clc from git
+    openshift.io/provider-display-name: OSPO, Red Hat, Inc.
+    tags: quickstart,python
+    template.openshift.io/bindable: 'false'
+  name: clc
+objects:
+
+- apiVersion: v1
+  kind: Secret
+  metadata:
+    name: ${NAME}
+  stringData:
+    github-api-key: ${GITHUB_API_KEY}
+    readonly-password: ${READONLY_PASSWORD}
+    admin-password: ${ADMIN_PASSWORD}
+
+- apiVersion: v1
+  kind: Service
+  metadata:
+    annotations:
+      description: Exposes and load balances the application pods
+    name: ${NAME}
+  spec:
+    ports:
+    - name: web
+      port: 8080
+      targetPort: 8080
+    selector:
+      name: ${NAME}
+
+- apiVersion: v1
+  kind: Route
+  metadata:
+    name: ${NAME}
+  spec:
+    host: ${APPLICATION_DOMAIN}
+    to:
+      kind: Service
+      name: ${NAME}
+
+- apiVersion: v1
+  kind: ImageStream
+  metadata:
+    annotations:
+      description: Keeps track of changes in the application image
+    name: ${NAME}
+
+- apiVersion: v1
+  kind: ConfigMap
+  metadata:
+    annotations:
+      description: Manage clc configuration
+    name: ${NAME}-config
+  data: 
+    start.sh: |+
+      #!/bin/bash
+      set -x
+      ls -l /srv/
+      cd /srv/server
+      sed -e "s/GITHUB_API_KEY/$GITHUB_API_KEY/" /srv/config/clc.yaml > /srv/scratch/clc.yaml
+      sed -e "s/ADMIN_PASSWORD/$ADMIN_PASSWORD/" -e "s/READONLY_PASSWORD/$READONLY_PASSWORD/" /srv/config/users.yaml > /srv/scratch/users.yaml 
+      python3 main.py --config /srv/scratch/clc.yaml
+
+    users.yaml: |+
+      reader:                               
+          name: "Readonly user"               
+          email: readonly@example.org         
+          type: user                          
+          password_plain: READONLY_PASSWORD
+      admin:                                
+          name: "Administrator"               
+          email: admin@example.org            
+          type: admin                         
+          password_plain: ADMIN_PASSWORD   
+
+    clc.yaml: |+
+      server:                                
+          port: 8080                           
+          traceback: true                      
+                                               
+      tasks:                                
+          refresh_rate:  42300               
+                                               
+      directories:                          
+          scratch: /srv/scratch                
+          remove_bare: true                   
+                                              
+      executables:                          
+          git: "/usr/bin/git"                 
+                                              
+      debug:                      
+          print_issues: true
+          open_server: true
+                                              
+      acl:
+          accounts_file: /srv/scratch/users.yaml
+          auditlog: /srv/auditlog.txt
+                                              
+      oauth:                                
+          github_api_key: GITHUB_API_KEY 
+
+- apiVersion: v1
+  kind: BuildConfig
+  metadata:
+    annotations:
+      description: Defines how to build the application
+      template.alpha.openshift.io/wait-for-ready: 'true'
+    name: ${NAME}
+  spec:
+    output:
+      to:
+        kind: ImageStreamTag
+        name: ${NAME}:latest
+    source:
+      git:
+        ref: main
+        uri: https://github.com/Humbedooh/clc.git
+      type: Git
+      dockerfile: |-
+        # TODO test with ubi 8
+        FROM fedora:34
+        EXPOSE 8080
+        WORKDIR /srv/server
+        COPY server /srv/server
+       
+        RUN dnf install -y python3-pip gcc python3-devel git && dnf clean all
+        RUN pip install -r requirements.txt
+                
+        CMD ["bash", "/srv/config/start.sh"]
+
+    strategy:
+      type: Docker
+  triggers:
+  - type: ImageChange
+  - type: ConfigChange
+
+
+
+
+- apiVersion: v1
+  kind: DeploymentConfig
+  metadata:
+    annotations:
+      description: Defines how to deploy the application server
+      template.alpha.openshift.io/wait-for-ready: 'true'
+    name: ${NAME}
+  spec:
+    replicas: 1
+    selector:
+      name: ${NAME}
+    strategy:
+      type: Recreate
+    template:
+      metadata:
+        labels:
+          name: ${NAME}
+      name: ${NAME}
+      spec:
+        containers:
+        - name: ${NAME}
+          env:
+          - name: SITE_URL
+            value: http://${APPLICATION_DOMAIN}
+          - name: GITHUB_API_KEY
+            valueFrom:
+              secretKeyRef:
+                key: github-api-key
+                name: ${NAME}
+          - name: ADMIN_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                key: admin-password
+                name: ${NAME}
+          - name: READONLY_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                key: readonly-password
+                name: ${NAME}
+          image: ' '
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 30
+            timeoutSeconds: 3
+          ports:
+          - containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 3
+            timeoutSeconds: 3
+          resources:
+            limits:
+              memory: ${MEMORY_LIMIT}
+          volumeMounts:
+          - mountPath: /srv/scratch/
+            name: scratch-volume
+          - mountPath: /srv/config
+            name: config-volume
+        volumes:
+        - name: scratch-volume
+          persistentVolumeClaim:
+            claimName: scratch-volume
+        - name: config-volume
+          configMap:
+            name: ${NAME}-config
+
+
+    triggers:
+    - type: ImageChange
+      imageChangeParams:
+        automatic: true
+        containerNames:
+        - ${NAME}
+        from:
+          kind: ImageStreamTag
+          name: ${NAME}:latest
+    - type: ConfigChange
+
+- apiVersion: v1
+  kind: PersistentVolumeClaim
+  metadata:
+    name: scratch-volume
+  spec:
+    accessModes:
+    - ReadWriteOnce
+    resources:
+      requests:
+        storage: ${SCRATCH_VOLUME_CAPACITY}
+
+
+parameters:
+- description: The name assigned to all of the frontend objects defined in this template.
+  displayName: Name
+  name: NAME
+  required: true
+  value: clc
+
+- description: Application domain name, used for the route
+  displayName: Application domain
+  name: APPLICATION_DOMAIN
+  required: true
+  value: ''
+
+- description: Maximum amount of memory the application container can use.
+  displayName: Memory Limit
+  name: MEMORY_LIMIT
+  required: true
+  value: 1024Mi
+
+- description: Storage allocated for the cloned git repos
+  displayName: Storage capacity
+  name: SCRATCH_VOLUME_CAPACITY
+  required: true
+  value: 1Gi
+
+- description: Github API key
+  displayName: Github API key
+  name: GITHUB_API_KEY
+  required: true
+  value: ' '
+
+- description: Admin password
+  displayName: Admin password
+  name: ADMIN_PASSWORD
+  from: '[a-zA-Z0-9]{16}'
+  generate: expression
+
+- description: Read only password
+  displayName: Read only password
+  name: READONLY_PASSWORD
+  from: '[a-zA-Z0-9]{16}'
+  generate: expression
