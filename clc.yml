@@ -72,6 +72,7 @@ objects:
       cd /srv/server
       sed -e "s/GITHUB_API_KEY/$GITHUB_API_KEY/" /srv/config/clc.yaml > /srv/scratch/clc.yaml
       sed -e "s/ADMIN_PASSWORD/$ADMIN_PASSWORD/" -e "s/READONLY_PASSWORD/$READONLY_PASSWORD/" /srv/config/users.yaml > /srv/scratch/users.yaml 
+      mkdir -p /srv/scratch/git/
       python3 main.py --config /srv/scratch/clc.yaml
 
     users.yaml: |+
@@ -95,7 +96,7 @@ objects:
           refresh_rate:  42300               
                                                
       directories:                          
-          scratch: /srv/scratch                
+          scratch: /srv/scratch/git
           remove_bare: true                   
                                               
       executables:                          
